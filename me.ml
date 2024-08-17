@@ -59,24 +59,30 @@ type state =
   ; mutable terminal_height : int
   ; mutable script_lines : string array
   ; mutable script_cursor_line : int
-  ; mutable script_cursor_column : int
+  ; mutable script_cursor_preferred_column : int
   }
+
+let get_script_cursor_column state =
+  Int.min
+    state.script_cursor_preferred_column
+    (String.length state.script_lines.(state.script_cursor_line))
+;;
 
 let insert_char char state =
   let into = state.script_lines.(state.script_cursor_line) in
-  state.script_lines.(state.script_cursor_line)
-  <- insert_char_at ~char ~into ~at:state.script_cursor_column;
-  state.script_cursor_column <- state.script_cursor_column + 1
+  let column = get_script_cursor_column state in
+  state.script_lines.(state.script_cursor_line) <- insert_char_at ~char ~into ~at:column;
+  state.script_cursor_preferred_column <- column + 1
 ;;
 
 let delete_char state =
   let from_ = state.script_lines.(state.script_cursor_line) in
-  if state.script_cursor_column > 0
+  let column = get_script_cursor_column state in
+  if column > 0
   then (
-    state.script_lines.(state.script_cursor_line)
-    <- delete_char_at ~from_ ~at:(state.script_cursor_column - 1);
-    state.script_cursor_column <- state.script_cursor_column - 1)
-  else if state.script_cursor_column = 0
+    state.script_lines.(state.script_cursor_line) <- delete_char_at ~from_ ~at:(column - 1);
+    state.script_cursor_preferred_column <- column - 1)
+  else if column = 0
   then
     if state.script_cursor_line > 0
     then (
@@ -86,17 +92,50 @@ let delete_char state =
       let line = state.script_lines.(state.script_cursor_line) in
       state.script_lines <- Array.concat [ above; [| line_before ^ line |]; below ];
       state.script_cursor_line <- state.script_cursor_line - 1;
-      state.script_cursor_column <- String.length line_before)
+      state.script_cursor_preferred_column <- String.length line_before)
 ;;
 
 let newline state =
   let line = state.script_lines.(state.script_cursor_line) in
-  let before, after = split_string_at line ~at:state.script_cursor_column in
+  let column = get_script_cursor_column state in
+  let before, after = split_string_at line ~at:column in
   let above = sub_array_before state.script_lines state.script_cursor_line in
   let below = sub_array_to_end state.script_lines (state.script_cursor_line + 1) in
   state.script_lines <- Array.concat [ above; [| before; after |]; below ];
   state.script_cursor_line <- state.script_cursor_line + 1;
-  state.script_cursor_column <- 0
+  state.script_cursor_preferred_column <- 0
+;;
+
+let cursor_up state =
+  if state.script_cursor_line > 0
+  then state.script_cursor_line <- state.script_cursor_line - 1
+;;
+
+let cursor_down state =
+  if state.script_cursor_line < Array.length state.script_lines - 1
+  then state.script_cursor_line <- state.script_cursor_line + 1
+;;
+
+let cursor_right state =
+  let line = state.script_lines.(state.script_cursor_line) in
+  let column = get_script_cursor_column state in
+  if column < String.length line
+  then state.script_cursor_preferred_column <- column + 1
+  else if state.script_cursor_line < Array.length state.script_lines - 1
+  then (
+    state.script_cursor_line <- state.script_cursor_line + 1;
+    state.script_cursor_preferred_column <- 0)
+;;
+
+let cursor_left state =
+  let column = get_script_cursor_column state in
+  if column > 0
+  then state.script_cursor_preferred_column <- column - 1
+  else if state.script_cursor_line > 0
+  then (
+    let line = state.script_lines.(state.script_cursor_line) in
+    state.script_cursor_line <- state.script_cursor_line - 1;
+    state.script_cursor_preferred_column <- String.length line)
 ;;
 
 let all_tc_bindings =
@@ -198,7 +237,14 @@ let all_tc_bindings =
       ; "}", insert_char '}'
       ; "~", insert_char '~'
       ]
-    ; [ "\x7f", delete_char; "\n", newline ]
+    ; (* Control sequences *)
+      [ "\x7f", delete_char
+      ; "\n", newline
+      ; "\x1b[A", cursor_up
+      ; "\x1b[B", cursor_down
+      ; "\x1b[C", cursor_right
+      ; "\x1b[D", cursor_left
+      ]
     ]
   |> List.to_seq
   |> String_map.of_seq
@@ -207,10 +253,8 @@ let all_tc_bindings =
 let render state =
   Printf.printf "\x1b[0;0H\x1b[2J";
   ArrayLabels.iter state.script_lines ~f:print_endline;
-  Printf.printf
-    "\x1b[%d;%dH"
-    (state.script_cursor_line + 1)
-    (state.script_cursor_column + 1);
+  let column = get_script_cursor_column state in
+  Printf.printf "\x1b[%d;%dH" (state.script_cursor_line + 1) (column + 1);
   Out_channel.flush Out_channel.stdout
 ;;
 
@@ -246,7 +290,7 @@ let () =
     ; terminal_height
     ; script_lines = [| "" |]
     ; script_cursor_line = 0
-    ; script_cursor_column = 0
+    ; script_cursor_preferred_column = 0
     }
   in
   let tc = Unix.tcgetattr Unix.stdin in
