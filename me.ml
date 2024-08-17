@@ -54,21 +54,93 @@ let sub_array_to_end array index =
 
 external terminal_size : unit -> int * int = "metaedit_terminal_size"
 
-type buffer =
-  { mutable lines : string array
-  ; mutable cursor_line : int
-  ; mutable cursor_preferred_column : int
-  }
+module Editor = struct
+  type t =
+    { mutable lines : string array
+    ; mutable cursor_line : int
+    ; mutable cursor_preferred_column : int
+    }
+
+  let get_cursor_column e =
+    Int.min e.cursor_preferred_column (String.length e.lines.(e.cursor_line))
+  ;;
+
+  let insert_char char e =
+    let into = e.lines.(e.cursor_line) in
+    let column = get_cursor_column e in
+    e.lines.(e.cursor_line) <- insert_char_at ~char ~into ~at:column;
+    e.cursor_preferred_column <- column + 1
+  ;;
+
+  let delete_char e =
+    let from_ = e.lines.(e.cursor_line) in
+    let column = get_cursor_column e in
+    if column > 0
+    then (
+      e.lines.(e.cursor_line) <- delete_char_at ~from_ ~at:(column - 1);
+      e.cursor_preferred_column <- column - 1)
+    else if column = 0
+    then
+      if e.cursor_line > 0
+      then (
+        let above = sub_array_before e.lines (e.cursor_line - 1) in
+        let below = sub_array_to_end e.lines (e.cursor_line + 1) in
+        let line_before = e.lines.(e.cursor_line - 1) in
+        let line = e.lines.(e.cursor_line) in
+        e.lines <- Array.concat [ above; [| line_before ^ line |]; below ];
+        e.cursor_line <- e.cursor_line - 1;
+        e.cursor_preferred_column <- String.length line_before)
+  ;;
+
+  let newline e =
+    let line = e.lines.(e.cursor_line) in
+    let column = get_cursor_column e in
+    let before, after = split_string_at line ~at:column in
+    let above = sub_array_before e.lines e.cursor_line in
+    let below = sub_array_to_end e.lines (e.cursor_line + 1) in
+    e.lines <- Array.concat [ above; [| before; after |]; below ];
+    e.cursor_line <- e.cursor_line + 1;
+    e.cursor_preferred_column <- 0
+  ;;
+
+  let cursor_up e = if e.cursor_line > 0 then e.cursor_line <- e.cursor_line - 1
+
+  let cursor_down e =
+    if e.cursor_line < Array.length e.lines - 1 then e.cursor_line <- e.cursor_line + 1
+  ;;
+
+  let cursor_right e =
+    let line = e.lines.(e.cursor_line) in
+    let column = get_cursor_column e in
+    if column < String.length line
+    then e.cursor_preferred_column <- column + 1
+    else if e.cursor_line < Array.length e.lines - 1
+    then (
+      e.cursor_line <- e.cursor_line + 1;
+      e.cursor_preferred_column <- 0)
+  ;;
+
+  let cursor_left e =
+    let column = get_cursor_column e in
+    if column > 0
+    then e.cursor_preferred_column <- column - 1
+    else if e.cursor_line > 0
+    then (
+      let line = e.lines.(e.cursor_line) in
+      e.cursor_line <- e.cursor_line - 1;
+      e.cursor_preferred_column <- String.length line)
+  ;;
+end
 
 type workspace =
-  { mutable buffers : buffer String_map.t
+  { mutable editors : Editor.t String_map.t
   ; mutable focused : string
   }
 
 type state =
   { mutable terminal_width : int
   ; mutable terminal_height : int
-  ; script : buffer
+  ; script : Editor.t
   ; workspace : workspace
   }
 
@@ -92,77 +164,8 @@ module Action = struct
         -> t
 end
 
-let get_cursor_column b =
-  Int.min b.cursor_preferred_column (String.length b.lines.(b.cursor_line))
-;;
-
-let insert_char char b =
-  let into = b.lines.(b.cursor_line) in
-  let column = get_cursor_column b in
-  b.lines.(b.cursor_line) <- insert_char_at ~char ~into ~at:column;
-  b.cursor_preferred_column <- column + 1
-;;
-
-let delete_char b =
-  let from_ = b.lines.(b.cursor_line) in
-  let column = get_cursor_column b in
-  if column > 0
-  then (
-    b.lines.(b.cursor_line) <- delete_char_at ~from_ ~at:(column - 1);
-    b.cursor_preferred_column <- column - 1)
-  else if column = 0
-  then
-    if b.cursor_line > 0
-    then (
-      let above = sub_array_before b.lines (b.cursor_line - 1) in
-      let below = sub_array_to_end b.lines (b.cursor_line + 1) in
-      let line_before = b.lines.(b.cursor_line - 1) in
-      let line = b.lines.(b.cursor_line) in
-      b.lines <- Array.concat [ above; [| line_before ^ line |]; below ];
-      b.cursor_line <- b.cursor_line - 1;
-      b.cursor_preferred_column <- String.length line_before)
-;;
-
-let newline b =
-  let line = b.lines.(b.cursor_line) in
-  let column = get_cursor_column b in
-  let before, after = split_string_at line ~at:column in
-  let above = sub_array_before b.lines b.cursor_line in
-  let below = sub_array_to_end b.lines (b.cursor_line + 1) in
-  b.lines <- Array.concat [ above; [| before; after |]; below ];
-  b.cursor_line <- b.cursor_line + 1;
-  b.cursor_preferred_column <- 0
-;;
-
-let cursor_up b = if b.cursor_line > 0 then b.cursor_line <- b.cursor_line - 1
-
-let cursor_down b =
-  if b.cursor_line < Array.length b.lines - 1 then b.cursor_line <- b.cursor_line + 1
-;;
-
-let cursor_right b =
-  let line = b.lines.(b.cursor_line) in
-  let column = get_cursor_column b in
-  if column < String.length line
-  then b.cursor_preferred_column <- column + 1
-  else if b.cursor_line < Array.length b.lines - 1
-  then (
-    b.cursor_line <- b.cursor_line + 1;
-    b.cursor_preferred_column <- 0)
-;;
-
-let cursor_left b =
-  let column = get_cursor_column b in
-  if column > 0
-  then b.cursor_preferred_column <- column - 1
-  else if b.cursor_line > 0
-  then (
-    let line = b.lines.(b.cursor_line) in
-    b.cursor_line <- b.cursor_line - 1;
-    b.cursor_preferred_column <- String.length line)
-;;
-
 let all_tc_bindings =
+  let insert_char = Editor.insert_char in
   List.concat
     [ (* Plain old character insertion *)
       [ " ", insert_char ' '
@@ -262,12 +265,12 @@ let all_tc_bindings =
       ; "~", insert_char '~'
       ]
     ; (* Control sequences *)
-      [ "\x7f", delete_char
-      ; "\n", newline
-      ; "\x1b[A", cursor_up
-      ; "\x1b[B", cursor_down
-      ; "\x1b[C", cursor_right
-      ; "\x1b[D", cursor_left
+      [ "\x7f", Editor.delete_char
+      ; "\n", Editor.newline
+      ; "\x1b[A", Editor.cursor_up
+      ; "\x1b[B", Editor.cursor_down
+      ; "\x1b[C", Editor.cursor_right
+      ; "\x1b[D", Editor.cursor_left
       ]
     ]
   |> List.to_seq
@@ -291,7 +294,7 @@ let render state =
     in
     print_endline line
   done;
-  let column = get_cursor_column state.script in
+  let column = Editor.get_cursor_column state.script in
   Printf.printf "\x1b[%d;%dH" (state.script.cursor_line - top + 1) (column + 1);
   Out_channel.flush Out_channel.stdout
 ;;
@@ -339,10 +342,10 @@ let () =
     ; terminal_height
     ; script = { lines = script_lines; cursor_line = 0; cursor_preferred_column = 0 }
     ; workspace =
-        { buffers =
+        { editors =
             String_map.singleton
               "scratch"
-              { lines = [| "" |]; cursor_line = 0; cursor_preferred_column = 0 }
+              { Editor.lines = [| "" |]; cursor_line = 0; cursor_preferred_column = 0 }
         ; focused = "scratch"
         }
     }
