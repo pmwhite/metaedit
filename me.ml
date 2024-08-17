@@ -54,88 +54,86 @@ let sub_array_to_end array index =
 
 external terminal_size : unit -> int * int = "metaedit_terminal_size"
 
+type buffer =
+  { mutable lines : string array
+  ; mutable cursor_line : int
+  ; mutable cursor_preferred_column : int
+  }
+
 type state =
   { mutable terminal_width : int
   ; mutable terminal_height : int
-  ; mutable script_lines : string array
-  ; mutable script_cursor_line : int
-  ; mutable script_cursor_preferred_column : int
+  ; script : buffer
   }
 
-let get_script_cursor_column state =
-  Int.min
-    state.script_cursor_preferred_column
-    (String.length state.script_lines.(state.script_cursor_line))
+let get_cursor_column b =
+  Int.min b.cursor_preferred_column (String.length b.lines.(b.cursor_line))
 ;;
 
-let insert_char char state =
-  let into = state.script_lines.(state.script_cursor_line) in
-  let column = get_script_cursor_column state in
-  state.script_lines.(state.script_cursor_line) <- insert_char_at ~char ~into ~at:column;
-  state.script_cursor_preferred_column <- column + 1
+let insert_char char b =
+  let into = b.lines.(b.cursor_line) in
+  let column = get_cursor_column b in
+  b.lines.(b.cursor_line) <- insert_char_at ~char ~into ~at:column;
+  b.cursor_preferred_column <- column + 1
 ;;
 
-let delete_char state =
-  let from_ = state.script_lines.(state.script_cursor_line) in
-  let column = get_script_cursor_column state in
+let delete_char b =
+  let from_ = b.lines.(b.cursor_line) in
+  let column = get_cursor_column b in
   if column > 0
   then (
-    state.script_lines.(state.script_cursor_line) <- delete_char_at ~from_ ~at:(column - 1);
-    state.script_cursor_preferred_column <- column - 1)
+    b.lines.(b.cursor_line) <- delete_char_at ~from_ ~at:(column - 1);
+    b.cursor_preferred_column <- column - 1)
   else if column = 0
   then
-    if state.script_cursor_line > 0
+    if b.cursor_line > 0
     then (
-      let above = sub_array_before state.script_lines (state.script_cursor_line - 1) in
-      let below = sub_array_to_end state.script_lines (state.script_cursor_line + 1) in
-      let line_before = state.script_lines.(state.script_cursor_line - 1) in
-      let line = state.script_lines.(state.script_cursor_line) in
-      state.script_lines <- Array.concat [ above; [| line_before ^ line |]; below ];
-      state.script_cursor_line <- state.script_cursor_line - 1;
-      state.script_cursor_preferred_column <- String.length line_before)
+      let above = sub_array_before b.lines (b.cursor_line - 1) in
+      let below = sub_array_to_end b.lines (b.cursor_line + 1) in
+      let line_before = b.lines.(b.cursor_line - 1) in
+      let line = b.lines.(b.cursor_line) in
+      b.lines <- Array.concat [ above; [| line_before ^ line |]; below ];
+      b.cursor_line <- b.cursor_line - 1;
+      b.cursor_preferred_column <- String.length line_before)
 ;;
 
-let newline state =
-  let line = state.script_lines.(state.script_cursor_line) in
-  let column = get_script_cursor_column state in
+let newline b =
+  let line = b.lines.(b.cursor_line) in
+  let column = get_cursor_column b in
   let before, after = split_string_at line ~at:column in
-  let above = sub_array_before state.script_lines state.script_cursor_line in
-  let below = sub_array_to_end state.script_lines (state.script_cursor_line + 1) in
-  state.script_lines <- Array.concat [ above; [| before; after |]; below ];
-  state.script_cursor_line <- state.script_cursor_line + 1;
-  state.script_cursor_preferred_column <- 0
+  let above = sub_array_before b.lines b.cursor_line in
+  let below = sub_array_to_end b.lines (b.cursor_line + 1) in
+  b.lines <- Array.concat [ above; [| before; after |]; below ];
+  b.cursor_line <- b.cursor_line + 1;
+  b.cursor_preferred_column <- 0
 ;;
 
-let cursor_up state =
-  if state.script_cursor_line > 0
-  then state.script_cursor_line <- state.script_cursor_line - 1
+let cursor_up b = if b.cursor_line > 0 then b.cursor_line <- b.cursor_line - 1
+
+let cursor_down b =
+  if b.cursor_line < Array.length b.lines - 1 then b.cursor_line <- b.cursor_line + 1
 ;;
 
-let cursor_down state =
-  if state.script_cursor_line < Array.length state.script_lines - 1
-  then state.script_cursor_line <- state.script_cursor_line + 1
-;;
-
-let cursor_right state =
-  let line = state.script_lines.(state.script_cursor_line) in
-  let column = get_script_cursor_column state in
+let cursor_right b =
+  let line = b.lines.(b.cursor_line) in
+  let column = get_cursor_column b in
   if column < String.length line
-  then state.script_cursor_preferred_column <- column + 1
-  else if state.script_cursor_line < Array.length state.script_lines - 1
+  then b.cursor_preferred_column <- column + 1
+  else if b.cursor_line < Array.length b.lines - 1
   then (
-    state.script_cursor_line <- state.script_cursor_line + 1;
-    state.script_cursor_preferred_column <- 0)
+    b.cursor_line <- b.cursor_line + 1;
+    b.cursor_preferred_column <- 0)
 ;;
 
-let cursor_left state =
-  let column = get_script_cursor_column state in
+let cursor_left b =
+  let column = get_cursor_column b in
   if column > 0
-  then state.script_cursor_preferred_column <- column - 1
-  else if state.script_cursor_line > 0
+  then b.cursor_preferred_column <- column - 1
+  else if b.cursor_line > 0
   then (
-    let line = state.script_lines.(state.script_cursor_line) in
-    state.script_cursor_line <- state.script_cursor_line - 1;
-    state.script_cursor_preferred_column <- String.length line)
+    let line = b.lines.(b.cursor_line) in
+    b.cursor_line <- b.cursor_line - 1;
+    b.cursor_preferred_column <- String.length line)
 ;;
 
 let all_tc_bindings =
@@ -252,23 +250,23 @@ let all_tc_bindings =
 
 let render state =
   Printf.printf "\x1b[0;0H\x1b[2J";
-  let num_lines = Array.length state.script_lines in
+  let num_lines = Array.length state.script.lines in
   let lines_to_display = Int.min (state.terminal_height - 1) num_lines in
-  let top = state.script_cursor_line - (lines_to_display / 2) in
+  let top = state.script.cursor_line - (lines_to_display / 2) in
   let top =
     if top + lines_to_display > num_lines then num_lines - lines_to_display else top
   in
   let top = if top < 0 then 0 else top in
   for i = 0 to lines_to_display - 1 do
-    let line = state.script_lines.(top + i) in
+    let line = state.script.lines.(top + i) in
     let len = String.length line in
     let line =
       if len > state.terminal_width then String.sub line 0 state.terminal_width else line
     in
     print_endline line
   done;
-  let column = get_script_cursor_column state in
-  Printf.printf "\x1b[%d;%dH" (state.script_cursor_line - top + 1) (column + 1);
+  let column = get_cursor_column state.script in
+  Printf.printf "\x1b[%d;%dH" (state.script.cursor_line - top + 1) (column + 1);
   Out_channel.flush Out_channel.stdout
 ;;
 
@@ -291,7 +289,7 @@ let maybe_run_and_reset_bindings tc_bindings state =
     match String_map.find_opt "" tc_bindings with
     | None -> tc_bindings
     | Some action ->
-      action state;
+      action state.script;
       render state;
       all_tc_bindings)
   else tc_bindings
@@ -313,9 +311,7 @@ let () =
   let state =
     { terminal_width
     ; terminal_height
-    ; script_lines
-    ; script_cursor_line = 0
-    ; script_cursor_preferred_column = 0
+    ; script = { lines = script_lines; cursor_line = 0; cursor_preferred_column = 0 }
     }
   in
   let tc = Unix.tcgetattr Unix.stdin in
@@ -347,7 +343,7 @@ let () =
                already a binding that fully matched, so we execute it's action
                and then process the character relative to the full set of
                bindings. *)
-            action state;
+            action state.script;
             render state;
             step_tc_bindings all_tc_bindings char)
         else new_tc_bindings
