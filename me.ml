@@ -194,7 +194,7 @@ module Editor = struct
     then { t with cursor_preferred_column = column - 1 }
     else if t.cursor_line > 0
     then (
-      let line = cursor_line t in
+      let line = Lines.get t.lines (t.cursor_line - 1) in
       { t with
         cursor_line = t.cursor_line - 1
       ; cursor_preferred_column = String.length line
