@@ -14,7 +14,7 @@ CAMLprim value metaedit_terminal_size(value unit) {
     uerror("ioctl", Nothing);
   }
   result = caml_alloc(2, 0);
-  Store_field(result, 0, Val_int(ws.ws_row));
-  Store_field(result, 1, Val_int(ws.ws_col));
+  Store_field(result, 0, Val_int(ws.ws_col));
+  Store_field(result, 1, Val_int(ws.ws_row));
   CAMLreturn(result);
 }

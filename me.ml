@@ -252,9 +252,23 @@ let all_tc_bindings =
 
 let render state =
   Printf.printf "\x1b[0;0H\x1b[2J";
-  ArrayLabels.iter state.script_lines ~f:print_endline;
+  let num_lines = Array.length state.script_lines in
+  let lines_to_display = Int.min (state.terminal_height - 1) num_lines in
+  let top = state.script_cursor_line - (lines_to_display / 2) in
+  let top =
+    if top + lines_to_display > num_lines then num_lines - lines_to_display else top
+  in
+  let top = if top < 0 then 0 else top in
+  for i = 0 to lines_to_display - 1 do
+    let line = state.script_lines.(top + i) in
+    let len = String.length line in
+    let line =
+      if len > state.terminal_width then String.sub line 0 state.terminal_width else line
+    in
+    print_endline line
+  done;
   let column = get_script_cursor_column state in
-  Printf.printf "\x1b[%d;%dH" (state.script_cursor_line + 1) (column + 1);
+  Printf.printf "\x1b[%d;%dH" (state.script_cursor_line - top + 1) (column + 1);
   Out_channel.flush Out_channel.stdout
 ;;
 
@@ -285,10 +299,21 @@ let maybe_run_and_reset_bindings tc_bindings state =
 
 let () =
   let terminal_width, terminal_height = terminal_size () in
+  let argc = Array.length Sys.argv in
+  let script_lines =
+    if argc < 2
+    then [| "" |]
+    else if argc = 2
+    then
+      In_channel.with_open_text Sys.argv.(1) In_channel.input_all
+      |> String.split_on_char '\n'
+      |> Array.of_list
+    else failwith "usage: me <file>"
+  in
   let state =
     { terminal_width
     ; terminal_height
-    ; script_lines = [| "" |]
+    ; script_lines
     ; script_cursor_line = 0
     ; script_cursor_preferred_column = 0
     }
