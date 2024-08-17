@@ -60,11 +60,37 @@ type buffer =
   ; mutable cursor_preferred_column : int
   }
 
+type workspace =
+  { mutable buffers : buffer String_map.t
+  ; mutable focused : string
+  }
+
 type state =
   { mutable terminal_width : int
   ; mutable terminal_height : int
   ; script : buffer
+  ; workspace : workspace
   }
+
+module Action = struct
+  type 'a arg =
+    | Int : int arg
+    | String : string arg
+
+  type 'a args =
+    | [] : unit args
+    | ( :: ) : (string * 'a) * 'b args -> ('a -> 'b) args
+
+  type t =
+    | T :
+        { preview : bool
+        ; name : string
+        ; args : 'a args
+        ; forward : workspace -> 'a args
+        ; backward : workspace -> 'a args
+        }
+        -> t
+end
 
 let get_cursor_column b =
   Int.min b.cursor_preferred_column (String.length b.lines.(b.cursor_line))
@@ -312,6 +338,13 @@ let () =
     { terminal_width
     ; terminal_height
     ; script = { lines = script_lines; cursor_line = 0; cursor_preferred_column = 0 }
+    ; workspace =
+        { buffers =
+            String_map.singleton
+              "scratch"
+              { lines = [| "" |]; cursor_line = 0; cursor_preferred_column = 0 }
+        ; focused = "scratch"
+        }
     }
   in
   let tc = Unix.tcgetattr Unix.stdin in
