@@ -204,34 +204,50 @@ module Editor = struct
 end
 
 type workspace =
-  { mutable editors : Editor.t String_map.t
-  ; mutable focused : string
+  { editors : Editor.t String_map.t
+  ; focused : string
   }
 
 type state =
   { mutable terminal_width : int
   ; mutable terminal_height : int
   ; mutable script : Editor.t
-  ; workspace : workspace
+  ; mutable workspace : workspace
   }
 
 module Action = struct
-  type 'a arg =
-    | Int : int arg
-    | String : string arg
-
-  type 'a args =
-    | [] : workspace args
-    | ( :: ) : (string * 'a) * 'b args -> ('a -> 'b) args
+  type 'a f =
+    | Int : string -> int f
+    | String : string -> string f
+    | Map : 'a f * ('a -> 'b) -> 'b f
+    | Both : 'a f * 'b f -> ('a * 'b) f
 
   type t =
-    | T :
-        { preview : bool
-        ; name : string
-        ; args : 'a args
-        ; f : workspace -> 'a args
-        }
-        -> t
+    { name : string
+    ; f : (unit -> workspace -> workspace) f
+    }
+
+  let ( let+ ) x f = Map (x, f)
+  let ( and+ ) a b = Both (a, b)
+
+  let open_file =
+    { name = "openFile"
+    ; f =
+        (let+ path = String "path"
+         and+ editor_name = String "editorName" in
+         fun () ->
+           let editor =
+             { Editor.lines =
+                 In_channel.with_open_text path In_channel.input_all
+                 |> String.split_on_char '\n'
+                 |> Editor.Lines.of_lines
+             ; cursor_line = 0
+             ; cursor_preferred_column = 0
+             }
+           in
+           fun w -> { w with editors = String_map.add editor_name editor w.editors })
+    }
+  ;;
 end
 
 let all_tc_bindings =
