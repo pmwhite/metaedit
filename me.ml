@@ -293,13 +293,30 @@ end = struct
   end
 end
 
-module Syntax = struct
+module Value = struct
+  module Type = struct
+    type 'a t =
+      | Int : int t
+      | String : string t
+      | Unit : unit t
+
+    let to_string (type a) (t : a t) =
+      match t with
+      | Int -> "int"
+      | String -> "string"
+      | Unit -> "unit"
+    ;;
+  end
+
+  type t = T : 'a Type.t * 'a -> t
+end
+
+module Lang = struct
   open Parser.O
 
   module Expr = struct
     type t =
-      | Int of int
-      | String of string
+      | Literal of Value.t
       | Var of string
       | Call of
           { func : string
@@ -319,6 +336,12 @@ module Syntax = struct
   let many p = Parser.fix (fun ps -> return [] <|> (List.cons <$> p <*> ps))
   let many1 p = List.cons <$> p <*> many p
   let many1_sep_by p ~sep = List.cons <$> p <*> many (sep *> p)
+
+  let upper_alpha_char =
+    Parser.satisfies (function
+      | 'A' .. 'Z' -> true
+      | _ -> false)
+  ;;
 
   let lower_alpha_char =
     Parser.satisfies (function
@@ -340,14 +363,25 @@ module Syntax = struct
 
   let char c = Parser.satisfies (Char.equal c)
   let white = many white_char *> return ()
-  let white1 = many white_char *> return ()
+  let white1 = many1 white_char *> return ()
 
   let many_string p =
+    let+ chars = many p in
+    String.of_seq (List.to_seq chars)
+  ;;
+
+  let many1_string p =
     let+ chars = many1 p in
     String.of_seq (List.to_seq chars)
   ;;
 
-  let ident = many_string lower_alpha_char
+  let var = many_string lower_alpha_char
+
+  let func =
+    let+ c = upper_alpha_char
+    and+ cs = many (upper_alpha_char <|> lower_alpha_char) in
+    String.of_seq (List.to_seq (c :: cs))
+  ;;
 
   let int =
     let* s = many_string digit_char in
@@ -368,30 +402,41 @@ module Syntax = struct
         and+ () = char c *> return () in
         result
       in
-      literal_char <|> escaped '"' '"' <|> escaped '\\' '\\' <|> escaped 'n' '\n'
+      literal_char
+      <|> escaped '"' '"'
+      <|> escaped '\\' '\\'
+      <|> escaped 'n' '\n'
+      <|> escaped 't' '\t'
     in
     char '"' *> many_string string_item <* char '"'
+  ;;
+
+  let value =
+    let int =
+      let+ int = int in
+      Value.T (Int, int)
+    in
+    let string =
+      let+ string = string in
+      Value.T (String, string)
+    in
+    int <|> string
   ;;
 
   let expr =
     Parser.fix (fun expr ->
       let var =
-        let+ var = ident in
+        let+ var = var in
         Expr.Var var
       in
-      let int =
-        let+ int = int in
-        Expr.Int int
+      let literal =
+        let+ value = value in
+        Expr.Literal value
       in
-      let string =
-        let+ string = string in
-        Expr.String string
-      in
-      let factor = var <|> int <|> string <|> (char '(' *> expr <* char ')') in
+      let factor = var <|> literal <|> (char '(' *> white *> expr <* white <* char ')') in
       let call =
-        let+ func = ident
-        and+ () = white1
-        and+ args = many1_sep_by expr ~sep:white1 in
+        let+ func = func
+        and+ args = many (white1 *> expr) in
         Expr.Call { func; args }
       in
       factor <|> call)
@@ -399,7 +444,7 @@ module Syntax = struct
 
   let stmt =
     let assign =
-      let+ var = ident
+      let+ var = var
       and+ () = white
       and+ () = char '=' *> return ()
       and+ () = white
@@ -410,7 +455,7 @@ module Syntax = struct
       let+ expr = expr in
       Stmt.Run expr
     in
-    assign <|> run
+    white *> (assign <|> run) <* white
   ;;
 end
 
@@ -422,13 +467,16 @@ module Action = struct
     | Both : 'a args * 'b args -> ('a * 'b) args
 
   type t =
-    { name : string
-    ; args : (unit -> workspace -> workspace) args
-    }
+    | T :
+        { name : string
+        ; result_type : 'a Value.Type.t
+        ; args : (unit -> workspace -> workspace * 'a) args
+        }
+        -> t
 
-  let create ~name args = { name; args }
+  let create ~name ~result_type args = T { name; result_type; args }
 
-  let help t =
+  let help (T t) =
     let rec words : type a. string list -> a args -> string list =
       fun acc args ->
       match args with
@@ -437,9 +485,13 @@ module Action = struct
       | Map (args, _) -> words acc args
       | Both (a, b) -> words (words acc b) a
     in
-    let words = t.name :: words [] t.args in
+    let words =
+      (t.name :: words [] t.args) @ [ "->"; Value.Type.to_string t.result_type ]
+    in
     String.concat " " words
   ;;
+
+  let name (T t) = t.name
 
   module O = struct
     let ( let+ ) x f = Map (x, f)
@@ -449,7 +501,8 @@ end
 
 let open_file =
   Action.create
-    ~name:"openFile"
+    ~name:"OpenFile"
+    ~result_type:Unit
     (let open Action.O in
      let+ path = String "path"
      and+ editor_name = String "editorName" in
@@ -463,8 +516,10 @@ let open_file =
          ; cursor_preferred_column = 0
          }
        in
-       fun w -> { w with editors = String_map.add editor_name editor w.editors })
+       fun w -> { w with editors = String_map.add editor_name editor w.editors }, ())
 ;;
+
+let all_actions = [ open_file ]
 
 let all_tc_bindings =
   let insert_char = Editor.insert_char in
@@ -579,6 +634,12 @@ let all_tc_bindings =
   |> String_map.of_seq
 ;;
 
+let first_func_in_expr (expr : Lang.Expr.t) =
+  match expr with
+  | Literal _ | Var _ -> None
+  | Call { func; args = _ } -> Some func
+;;
+
 let render state =
   Printf.printf "\x1b[0;0H\x1b[2J";
   let num_lines = Editor.Lines.length state.script.lines in
@@ -597,6 +658,28 @@ let render state =
     print_endline line
   done;
   let column = Editor.get_cursor_column state.script in
+  Printf.printf "\x1b[%d;0H" state.terminal_height;
+  let status_line =
+    match Parser.run Lang.stmt (Editor.cursor_line state.script) with
+    | [] -> "Failed to parse"
+    | _ :: _ :: _ as ways -> Printf.sprintf "Parsed %d different ways" (List.length ways)
+    | [ stmt ] ->
+      let expr =
+        match stmt with
+        | Assign { var = _; expr } -> expr
+        | Run expr -> expr
+      in
+      (match first_func_in_expr expr with
+       | None -> "Parsed successfully; no help because no funcs were used"
+       | Some func ->
+         (match
+            ListLabels.find_opt all_actions ~f:(fun action ->
+              String.equal func (Action.name action))
+          with
+          | Some action -> Action.help action
+          | None -> Printf.sprintf "No func named '%s'" func))
+  in
+  print_string status_line;
   Printf.printf "\x1b[%d;%dH" (state.script.cursor_line - top + 1) (column + 1);
   Out_channel.flush Out_channel.stdout
 ;;
