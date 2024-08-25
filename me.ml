@@ -215,40 +215,256 @@ type state =
   ; mutable workspace : workspace
   }
 
+module Parser : sig
+  type 'a t
+
+  val fail : 'a t
+  val return : 'a -> 'a t
+  val map : 'a t -> f:('a -> 'b) -> 'b t
+  val bind : 'a t -> f:('a -> 'b t) -> 'b t
+  val both : 'a t -> 'b t -> ('a * 'b) t
+  val satisfies : (char -> bool) -> char t
+  val or_ : 'a t -> 'a t -> 'a t
+  val one_of : 'a t list -> 'a t
+  val fix : ('a t -> 'a t) -> 'a t
+  val fix2 : ('a t -> 'b t -> 'a t) -> ('a t -> 'b t -> 'b t) -> 'a t * 'b t
+  val run : 'a t -> string -> 'a list
+
+  module O : sig
+    val return : 'a -> 'a t
+    val ( <|> ) : 'a t -> 'a t -> 'a t
+    val ( let+ ) : 'a t -> ('a -> 'b) -> 'b t
+    val ( and+ ) : 'a t -> 'b t -> ('a * 'b) t
+    val ( let* ) : 'a t -> ('a -> 'b t) -> 'b t
+    val ( and* ) : 'a t -> 'b t -> ('a * 'b) t
+    val ( <$> ) : ('a -> 'b) -> 'a t -> 'b t
+    val ( <*> ) : ('a -> 'b) t -> 'a t -> 'b t
+    val ( <* ) : 'a t -> 'b t -> 'a t
+    val ( *> ) : 'a t -> 'b t -> 'b t
+  end
+end = struct
+  type 'a t = char list -> ('a * char list) list
+
+  let fail _ = []
+  let return x cs = [ x, cs ]
+  let map t ~f cs = ListLabels.map (t cs) ~f:(fun (x, cs) -> f x, cs)
+  let bind t ~f cs = ListLabels.concat_map (t cs) ~f:(fun (x, cs) -> f x cs)
+  let both a b = bind a ~f:(fun a -> map b ~f:(fun b -> a, b))
+
+  let satisfies f cs =
+    match cs with
+    | [] -> []
+    | c :: cs -> if f c then [ c, cs ] else []
+  ;;
+
+  let or_ a b cs = a cs @ b cs
+  let one_of ts = ListLabels.fold_left ts ~init:fail ~f:or_
+  let rec fix f cs = f (fix f) cs
+
+  let rec fix2 f g =
+    ( (fun cs ->
+        let f', g' = fix2 f g in
+        f f' g' cs)
+    , fun cs ->
+        let f', g' = fix2 f g in
+        g f' g' cs )
+  ;;
+
+  let run t s =
+    ListLabels.filter_map
+      (t (List.of_seq (String.to_seq s)))
+      ~f:(fun (x, cs) ->
+        match cs with
+        | [] -> Some x
+        | _ :: _ -> None)
+  ;;
+
+  module O = struct
+    let return = return
+    let ( <|> ) = or_
+    let ( let+ ) t f = map t ~f
+    let ( and+ ) = both
+    let ( let* ) t f = bind t ~f
+    let ( and* ) = both
+    let ( <$> ) f t = map t ~f
+    let ( <*> ) f t = map (both f t) ~f:(fun (f, t) -> f t)
+    let ( <* ) a b = map (both a b) ~f:fst
+    let ( *> ) a b = map (both a b) ~f:snd
+  end
+end
+
+module Syntax = struct
+  open Parser.O
+
+  module Expr = struct
+    type t =
+      | Int of int
+      | String of string
+      | Var of string
+      | Call of
+          { func : string
+          ; args : t list
+          }
+  end
+
+  module Stmt = struct
+    type stmt =
+      | Assign of
+          { var : string
+          ; expr : Expr.t
+          }
+      | Run of Expr.t
+  end
+
+  let many p = Parser.fix (fun ps -> return [] <|> (List.cons <$> p <*> ps))
+  let many1 p = List.cons <$> p <*> many p
+  let many1_sep_by p ~sep = List.cons <$> p <*> many (sep *> p)
+
+  let lower_alpha_char =
+    Parser.satisfies (function
+      | 'a' .. 'z' -> true
+      | _ -> false)
+  ;;
+
+  let white_char =
+    Parser.satisfies (function
+      | ' ' | '\t' | '\n' -> true
+      | _ -> false)
+  ;;
+
+  let digit_char =
+    Parser.satisfies (function
+      | '0' .. '9' -> true
+      | _ -> false)
+  ;;
+
+  let char c = Parser.satisfies (Char.equal c)
+  let white = many white_char *> return ()
+  let white1 = many white_char *> return ()
+
+  let many_string p =
+    let+ chars = many1 p in
+    String.of_seq (List.to_seq chars)
+  ;;
+
+  let ident = many_string lower_alpha_char
+
+  let int =
+    let* s = many_string digit_char in
+    match int_of_string_opt s with
+    | Some s -> return s
+    | None -> Parser.fail
+  ;;
+
+  let string =
+    let string_item =
+      let literal_char =
+        Parser.satisfies (function
+          | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' -> true
+          | _ -> false)
+      in
+      let escaped c result =
+        let+ () = char '\\' *> return ()
+        and+ () = char c *> return () in
+        result
+      in
+      literal_char <|> escaped '"' '"' <|> escaped '\\' '\\' <|> escaped 'n' '\n'
+    in
+    char '"' *> many_string string_item <* char '"'
+  ;;
+
+  let expr =
+    Parser.fix (fun expr ->
+      let var =
+        let+ var = ident in
+        Expr.Var var
+      in
+      let int =
+        let+ int = int in
+        Expr.Int int
+      in
+      let string =
+        let+ string = string in
+        Expr.String string
+      in
+      let factor = var <|> int <|> string <|> (char '(' *> expr <* char ')') in
+      let call =
+        let+ func = ident
+        and+ () = white1
+        and+ args = many1_sep_by expr ~sep:white1 in
+        Expr.Call { func; args }
+      in
+      factor <|> call)
+  ;;
+
+  let stmt =
+    let assign =
+      let+ var = ident
+      and+ () = white
+      and+ () = char '=' *> return ()
+      and+ () = white
+      and+ expr = expr in
+      Stmt.Assign { var; expr }
+    in
+    let run =
+      let+ expr = expr in
+      Stmt.Run expr
+    in
+    assign <|> run
+  ;;
+end
+
 module Action = struct
-  type 'a f =
-    | Int : string -> int f
-    | String : string -> string f
-    | Map : 'a f * ('a -> 'b) -> 'b f
-    | Both : 'a f * 'b f -> ('a * 'b) f
+  type 'a args =
+    | Int : string -> int args
+    | String : string -> string args
+    | Map : 'a args * ('a -> 'b) -> 'b args
+    | Both : 'a args * 'b args -> ('a * 'b) args
 
   type t =
     { name : string
-    ; f : (unit -> workspace -> workspace) f
+    ; args : (unit -> workspace -> workspace) args
     }
 
-  let ( let+ ) x f = Map (x, f)
-  let ( and+ ) a b = Both (a, b)
+  let create ~name args = { name; args }
 
-  let open_file =
-    { name = "openFile"
-    ; f =
-        (let+ path = String "path"
-         and+ editor_name = String "editorName" in
-         fun () ->
-           let editor =
-             { Editor.lines =
-                 In_channel.with_open_text path In_channel.input_all
-                 |> String.split_on_char '\n'
-                 |> Editor.Lines.of_lines
-             ; cursor_line = 0
-             ; cursor_preferred_column = 0
-             }
-           in
-           fun w -> { w with editors = String_map.add editor_name editor w.editors })
-    }
+  let help t =
+    let rec words : type a. string list -> a args -> string list =
+      fun acc args ->
+      match args with
+      | Int name -> Printf.sprintf "%s:int" name :: acc
+      | String name -> Printf.sprintf "%s:string" name :: acc
+      | Map (args, _) -> words acc args
+      | Both (a, b) -> words (words acc b) a
+    in
+    let words = t.name :: words [] t.args in
+    String.concat " " words
   ;;
+
+  module O = struct
+    let ( let+ ) x f = Map (x, f)
+    let ( and+ ) a b = Both (a, b)
+  end
 end
+
+let open_file =
+  Action.create
+    ~name:"openFile"
+    (let open Action.O in
+     let+ path = String "path"
+     and+ editor_name = String "editorName" in
+     fun () ->
+       let editor =
+         { Editor.lines =
+             In_channel.with_open_text path In_channel.input_all
+             |> String.split_on_char '\n'
+             |> Editor.Lines.of_lines
+         ; cursor_line = 0
+         ; cursor_preferred_column = 0
+         }
+       in
+       fun w -> { w with editors = String_map.add editor_name editor w.editors })
+;;
 
 let all_tc_bindings =
   let insert_char = Editor.insert_char in
