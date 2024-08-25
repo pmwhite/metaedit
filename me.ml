@@ -57,57 +57,56 @@ let sub_array_to_end array index =
 
 external terminal_size : unit -> int * int = "metaedit_terminal_size"
 
+module Lines : sig
+  type t
+
+  val empty : t
+  val singleton : string -> t
+  val of_lines : string list -> t
+  val concat : t list -> t
+  val map_range : t -> int -> int -> f:(string list -> string list) -> t
+  val map_line : t -> int -> f:(string -> string list) -> t
+  val get : t -> int -> string
+  val length : t -> int
+end = struct
+  type t = string array
+
+  let empty = [||]
+  let singleton l = [| l |]
+  let of_lines = Array.of_list
+  let concat = Array.concat
+  let length t = Array.length t
+
+  let map_range t from to_ ~f =
+    let len = length t in
+    if from < 0 || from > len || to_ < 0 || to_ > len || from > to_
+    then
+      bugf
+        "Lines.map_range: contract violated. from = %d, to_ = %d, len = %d"
+        from
+        to_
+        len;
+    let before = Array.sub t 0 from in
+    let middle = Array.of_list (f (Array.to_list (Array.sub t from (to_ - from)))) in
+    let after = Array.sub t to_ (len - to_) in
+    Array.concat [ before; middle; after ]
+  ;;
+
+  let map_line t i ~f =
+    let len = length t in
+    if i < 0 || i >= len
+    then bugf "Lines.map_line: contract violated. i = %d, len = %d" i len;
+    map_range t i (i + 1) ~f:(ListLabels.concat_map ~f)
+  ;;
+
+  let get t i =
+    let len = Array.length t in
+    if i < 0 || i >= len then bugf "Lines.get: contract violated. i = %d, len = %d" i len;
+    t.(i)
+  ;;
+end
+
 module Editor = struct
-  module Lines : sig
-    type t
-
-    val empty : t
-    val singleton : string -> t
-    val of_lines : string list -> t
-    val concat : t list -> t
-    val map_range : t -> int -> int -> f:(string list -> string list) -> t
-    val map_line : t -> int -> f:(string -> string list) -> t
-    val get : t -> int -> string
-    val length : t -> int
-  end = struct
-    type t = string array
-
-    let empty = [||]
-    let singleton l = [| l |]
-    let of_lines = Array.of_list
-    let concat = Array.concat
-    let length t = Array.length t
-
-    let map_range t from to_ ~f =
-      let len = length t in
-      if from < 0 || from > len || to_ < 0 || to_ > len || from > to_
-      then
-        bugf
-          "Lines.map_range: contract violated. from = %d, to_ = %d, len = %d"
-          from
-          to_
-          len;
-      let before = Array.sub t 0 from in
-      let middle = Array.of_list (f (Array.to_list (Array.sub t from (to_ - from)))) in
-      let after = Array.sub t to_ (len - to_) in
-      Array.concat [ before; middle; after ]
-    ;;
-
-    let map_line t i ~f =
-      let len = length t in
-      if i < 0 || i >= len
-      then bugf "Lines.map_line: contract violated. i = %d, len = %d" i len;
-      map_range t i (i + 1) ~f:(ListLabels.concat_map ~f)
-    ;;
-
-    let get t i =
-      let len = Array.length t in
-      if i < 0 || i >= len
-      then bugf "Lines.get: contract violated. i = %d, len = %d" i len;
-      t.(i)
-    ;;
-  end
-
   type t =
     { lines : Lines.t
     ; cursor_line : int
@@ -511,7 +510,7 @@ let open_file =
          { Editor.lines =
              In_channel.with_open_text path In_channel.input_all
              |> String.split_on_char '\n'
-             |> Editor.Lines.of_lines
+             |> Lines.of_lines
          ; cursor_line = 0
          ; cursor_preferred_column = 0
          }
@@ -642,7 +641,7 @@ let first_func_in_expr (expr : Lang.Expr.t) =
 
 let render state =
   Printf.printf "\x1b[0;0H\x1b[2J";
-  let num_lines = Editor.Lines.length state.script.lines in
+  let num_lines = Lines.length state.script.lines in
   let lines_to_display = Int.min (state.terminal_height - 1) num_lines in
   let top = state.script.cursor_line - (lines_to_display / 2) in
   let top =
@@ -650,7 +649,7 @@ let render state =
   in
   let top = if top < 0 then 0 else top in
   for i = 0 to lines_to_display - 1 do
-    let line = Editor.Lines.get state.script.lines (top + i) in
+    let line = Lines.get state.script.lines (top + i) in
     let len = String.length line in
     let line =
       if len > state.terminal_width then String.sub line 0 state.terminal_width else line
@@ -714,12 +713,12 @@ let () =
   let argc = Array.length Sys.argv in
   let script_lines =
     if argc < 2
-    then Editor.Lines.singleton ""
+    then Lines.singleton ""
     else if argc = 2
     then
       In_channel.with_open_text Sys.argv.(1) In_channel.input_all
       |> String.split_on_char '\n'
-      |> Editor.Lines.of_lines
+      |> Lines.of_lines
     else failwith "usage: me <file>"
   in
   let state =
@@ -730,7 +729,7 @@ let () =
         { editors =
             String_map.singleton
               "scratch"
-              { Editor.lines = Editor.Lines.singleton ""
+              { Editor.lines = Lines.singleton ""
               ; cursor_line = 0
               ; cursor_preferred_column = 0
               }
